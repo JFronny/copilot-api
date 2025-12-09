@@ -1,4 +1,4 @@
-import { copilotBaseUrl } from "~/lib/api-config"
+import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
 import {state} from "~/lib/state";
 import consola from "consola";
 import type {ChatCompletionResponse} from "~/services/copilot/create-chat-completions";
@@ -15,38 +15,7 @@ export const createInfillCompletion = async (
 ) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json; charset=utf-8",
-    "User-Agent": "helix/1.0.0",
-    Authorization: `Bearer ${state.copilotToken}`,
-    "Editor-Plugin-Version": "copilot-chat/0.24.1",
-    "Editor-Version": "vscode/1.99",
-    "Openai-Intent": "conversation-panel",
-    "Openai-Organization": "github-copilot",
-    "VScode-MachineId": genHexStr(64),
-    "VScode-SessionId":
-      genHexStr(8) +
-      "-" +
-      genHexStr(4) +
-      "-" +
-      genHexStr(4) +
-      "-" +
-      genHexStr(4) +
-      "-" +
-      genHexStr(25),
-    "X-Request-Id":
-      genHexStr(8) +
-      "-" +
-      genHexStr(4) +
-      "-" +
-      genHexStr(4) +
-      "-" +
-      genHexStr(4) +
-      "-" +
-      genHexStr(12),
-    "Accept-Encoding": "gzip,deflate,br",
-    Accept: "*/*",
-  }
+  const headers: Record<string, string> = copilotHeaders(state, false)
 
   consola.debug("Headers: ")
 
