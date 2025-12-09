@@ -4,9 +4,9 @@ import { forwardError } from "~/lib/error"
 
 import { handleCompletion } from "./handler"
 
-export const completionRoutes = new Hono()
+export const chatCompletionRoutes = new Hono()
 
-completionRoutes.post("/", async (c) => {
+chatCompletionRoutes.post("/", async (c) => {
   try {
     return await handleCompletion(c)
   } catch (error) {
