@@ -1,13 +1,17 @@
-import {
-  createInfillCompletion,
-  type InfillCompletionPayload,
-} from "~/services/copilot/create-infill-completion";
+import {createInfillCompletion, type InfillCompletionPayload,} from "~/services/copilot/create-infill-completion";
 import type {Context} from "hono";
 import {checkRateLimit} from "~/lib/rate-limit";
 import {state} from "~/lib/state";
 import consola from "consola";
 import {type SSEMessage, streamSSE} from "hono/streaming";
 import {type ChatCompletionResponse, createChatCompletions} from "~/services/copilot/create-chat-completions";
+
+function isLegalStop(s: string): boolean {
+  if (s.startsWith("<") && s.endsWith(">")) return false;
+  if (s == ")\n") return false;
+  if (s == ",\n") return false;
+  return true;
+}
 
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
@@ -36,6 +40,22 @@ export async function handleCompletion(c: Context) {
   }
   payload.prompt = prompt
 
+  if (payload.stop == null) {
+    payload.stop = []
+  }
+  if (typeof payload.stop === "string") {
+    const s = payload.stop
+    if (isLegalStop(s)) {
+      payload.stop = [s]
+    }
+  } else if (Array.isArray(payload.stop)) {
+    payload.stop = payload.stop.filter(isLegalStop)
+  } else {
+    consola.debug("Unexpected stop type:", typeof payload.stop)
+  }
+  if (payload.stop.length == 0) payload.stop = ["\n\n"]
+  consola.debug("Modified stop:", JSON.stringify(payload.stop))
+
   const mappedPayload: InfillCompletionPayload = {
     extra: {
       language: "java",
@@ -48,7 +68,7 @@ export async function handleCompletion(c: Context) {
     n: payload.n ?? 1,
     nwo: "app",
     prompt: `// Path: /var/tmp/appyZVr5Hx.java\n${payload.prompt}`,
-    stop: ["\n\n"],//payload.stop ?? ["\n\n"],
+    stop: payload.stop,
     stream: payload.stream ?? false,
     suffix: payload.suffix,
     temperature: payload.temperature ?? ((payload.n ?? 1) > 1 ? 0.4 : 0),
@@ -65,9 +85,27 @@ export async function handleCompletion(c: Context) {
   consola.debug("Streaming response")
   return streamSSE(c, async (stream) => {
     for await (const chunk of response) {
+      if (chunk.data != "[DONE]" && chunk.data != null) {
+        const response: Completion = JSON.parse(chunk.data)
+        const timestamp = Math.floor(Date.now() / 1000);
+        response.id = "cmpl-" + timestamp;
+        response.created = timestamp;
+        response.model = payload.model ?? "gpt-4o-copilot"
+        response.object = "text_completion"
+        response.usage = {
+          completion_tokens: 12,
+          prompt_tokens: 12,
+          total_tokens: 24,
+        }
+        chunk.data = JSON.stringify(response)
+      }
       consola.debug("Streaming chunk:", JSON.stringify(chunk))
       await stream.writeSSE(chunk as SSEMessage)
     }
+    consola.debug("Streaming complete")
+  }, async (e, stream) => {
+    consola.error("Failed stream:", e)
+    await stream.close()
   })
 
   /*
@@ -303,4 +341,148 @@ export interface CompletionCreateParamsStreaming extends CompletionCreateParamsB
    * [Example Python code](https://cookbook.openai.com/examples/how_to_stream_completions).
    */
   stream: true;
+}
+
+/**
+ * Represents a completion response from the API. Note: both the streamed and
+ * non-streamed response objects share the same shape (unlike the chat endpoint).
+ */
+export interface Completion {
+  /**
+   * A unique identifier for the completion.
+   */
+  id: string;
+
+  /**
+   * The list of completion choices the model generated for the input prompt.
+   */
+  choices: Array<CompletionChoice>;
+
+  /**
+   * The Unix timestamp (in seconds) of when the completion was created.
+   */
+  created: number;
+
+  /**
+   * The model used for completion.
+   */
+  model: string;
+
+  /**
+   * The object type, which is always "text_completion"
+   */
+  object: 'text_completion';
+
+  /**
+   * This fingerprint represents the backend configuration that the model runs with.
+   *
+   * Can be used in conjunction with the `seed` request parameter to understand when
+   * backend changes have been made that might impact determinism.
+   */
+  system_fingerprint?: string;
+
+  /**
+   * Usage statistics for the completion request.
+   */
+  usage?: CompletionUsage;
+}
+
+interface CompletionChoice {
+  /**
+   * The reason the model stopped generating tokens. This will be `stop` if the model
+   * hit a natural stop point or a provided stop sequence, `length` if the maximum
+   * number of tokens specified in the request was reached, or `content_filter` if
+   * content was omitted due to a flag from our content filters.
+   */
+  finish_reason: 'stop' | 'length' | 'content_filter';
+
+  index: number;
+
+  logprobs: Logprobs | null;
+
+  text: string;
+}
+
+interface Logprobs {
+  text_offset?: Array<number>;
+
+  token_logprobs?: Array<number>;
+
+  tokens?: Array<string>;
+
+  top_logprobs?: Array<{ [key: string]: number }>;
+}
+
+/**
+ * Usage statistics for the completion request.
+ */
+interface CompletionUsage {
+  /**
+   * Number of tokens in the generated completion.
+   */
+  completion_tokens: number;
+
+  /**
+   * Number of tokens in the prompt.
+   */
+  prompt_tokens: number;
+
+  /**
+   * Total number of tokens used in the request (prompt + completion).
+   */
+  total_tokens: number;
+
+  /**
+   * Breakdown of tokens used in a completion.
+   */
+  completion_tokens_details?: CompletionTokensDetails;
+
+  /**
+   * Breakdown of tokens used in the prompt.
+   */
+  prompt_tokens_details?: PromptTokensDetails;
+}
+
+/**
+ * Breakdown of tokens used in the prompt.
+ */
+interface PromptTokensDetails {
+  /**
+   * Audio input tokens present in the prompt.
+   */
+  audio_tokens?: number;
+
+  /**
+   * Cached tokens present in the prompt.
+   */
+  cached_tokens?: number;
+}
+
+/**
+ * Breakdown of tokens used in a completion.
+ */
+interface CompletionTokensDetails {
+  /**
+   * When using Predicted Outputs, the number of tokens in the prediction that
+   * appeared in the completion.
+   */
+  accepted_prediction_tokens?: number;
+
+  /**
+   * Audio input tokens generated by the model.
+   */
+  audio_tokens?: number;
+
+  /**
+   * Tokens generated by the model for reasoning.
+   */
+  reasoning_tokens?: number;
+
+  /**
+   * When using Predicted Outputs, the number of tokens in the prediction that did
+   * not appear in the completion. However, like reasoning tokens, these tokens are
+   * still counted in the total completion tokens for purposes of billing, output,
+   * and context window limits.
+   */
+  rejected_prediction_tokens?: number;
 }
