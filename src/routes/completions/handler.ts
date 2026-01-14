@@ -5,6 +5,7 @@ import {state} from "~/lib/state";
 import consola from "consola";
 import {type SSEMessage, streamSSE} from "hono/streaming";
 import {type ChatCompletionResponse, createChatCompletions} from "~/services/copilot/create-chat-completions";
+import {rectifyCompletion} from "~/routes/chat-completions/handler";
 
 function isLegalStop(s: string): boolean {
   if (s.startsWith("<") && s.endsWith(">")) return false;
@@ -85,20 +86,7 @@ export async function handleCompletion(c: Context) {
   consola.debug("Streaming response")
   return streamSSE(c, async (stream) => {
     for await (const chunk of response) {
-      if (chunk.data != "[DONE]" && chunk.data != null) {
-        const response: Completion = JSON.parse(chunk.data)
-        const timestamp = Math.floor(Date.now() / 1000);
-        response.id = "cmpl-" + timestamp;
-        response.created = timestamp;
-        response.model = payload.model ?? "gpt-4o-copilot"
-        response.object = "text_completion"
-        response.usage = {
-          completion_tokens: 12,
-          prompt_tokens: 12,
-          total_tokens: 24,
-        }
-        chunk.data = JSON.stringify(response)
-      }
+      rectifyCompletion(chunk, payload.model)
       consola.debug("Streaming chunk:", JSON.stringify(chunk))
       await stream.writeSSE(chunk as SSEMessage)
     }

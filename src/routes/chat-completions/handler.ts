@@ -13,6 +13,8 @@ import {
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
+import type {Completion} from "~/routes/completions/handler";
+import type {ServerSentEventMessage} from "fetch-event-stream";
 
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
@@ -57,10 +59,28 @@ export async function handleCompletion(c: Context) {
   consola.debug("Streaming response")
   return streamSSE(c, async (stream) => {
     for await (const chunk of response) {
+      rectifyCompletion(chunk, payload.model)
       consola.debug("Streaming chunk:", JSON.stringify(chunk))
       await stream.writeSSE(chunk as SSEMessage)
     }
   })
+}
+
+export function rectifyCompletion(chunk: ServerSentEventMessage, requestedModel: string | null) {
+  if (chunk.data != "[DONE]" && chunk.data != null) {
+    const response: Completion = JSON.parse(chunk.data)
+    const timestamp = Math.floor(Date.now() / 1000);
+    response.id = "cmpl-" + timestamp;
+    response.created = timestamp;
+    response.model = requestedModel ?? "gpt-4o-copilot"
+    response.object = "text_completion"
+    response.usage = {
+      completion_tokens: 12,
+      prompt_tokens: 12,
+      total_tokens: 24,
+    }
+    chunk.data = JSON.stringify(response)
+  }
 }
 
 const isNonStreaming = (
